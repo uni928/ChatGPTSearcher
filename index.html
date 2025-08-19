@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ChatGPTログ抽出（「あなた:」で分割 & 検索）</title>
+<style>
+  :root{
+    --bg:#f6f7f9;
+    --card:#ffffff;
+    --gray:#e5e7eb;
+    --gray-text:#374151;
+    --green:#d1fae5;
+    --green-text:#065f46;
+  }
+  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px;}
+  .title{font-size:20px;font-weight:700;margin:8px 0 16px;}
+  .grid{display:grid;gap:16px;grid-template-columns:1fr;}
+  @media (min-width:1024px){ .grid{grid-template-columns:1.2fr .8fr} }
+  .card{background:var(--card);border-radius:16px;box-shadow:0 1px 2px rgba(0,0,0,.06);padding:16px}
+  textarea, input[type="text"]{
+    width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    border:1px solid #d1d5db;border-radius:12px;padding:10px;background:#fff;outline:none
+  }
+  textarea{min-height:320px;resize:vertical}
+  .controls{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .btn{
+    border:0;border-radius:12px;padding:10px 14px;background:#111827;color:#fff;cursor:pointer;font-weight:600
+  }
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .muted{color:#6b7280;font-size:12px}
+  .chat{display:flex;flex-direction:column;gap:10px}
+  .bubble {
+    width: 320px;        /* 固定幅 */
+    padding: 10px;
+    border-radius: 12px;
+    word-wrap: break-word; /* 長文は折り返し */
+    white-space: pre-wrap; /* 改行維持 */
+  }
+  .user{align-self:flex-end;background:var(--green);color:var(--green-text);border-top-right-radius:6px}
+  .assistant{align-self:flex-start;background:var(--gray);color:var(--gray-text);border-top-left-radius:6px}
+  .role{display:block;font-size:12px;font-weight:700;margin-bottom:4px;opacity:.8}
+  .kpi{display:flex;gap:12px;align-items:center;margin:8px 0 0;font-size:12px;color:#6b7280}
+  .empty{padding:12px;border:1px dashed #d1d5db;border-radius:12px;color:#6b7280;background:#fafafa}
+  mark{padding:0 .15em;border-radius:4px}
+  details{margin-top:8px}
+  .row{display:flex;gap:8px;align-items:center}
+  .row > *{flex:1}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">ChatGPTログ抽出ツール（あなた/ChatGPT 形式表示）</div>
+
+    <div class="grid">
+      <!-- 左：入力 -->
+      <section class="card">
+        <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C した内容をそのまま）</label>
+        <textarea id="source" placeholder="例：
+あなた: こんにちは！この前の件ですが…
+ChatGPT: こんにちは！もちろん、続きは…
+あなた: では○○を△△にして…
+ChatGPT: 承知しました。手順は……"></textarea>
+
+        <div class="controls">
+          <div class="row" style="flex:1 1 auto">
+            <input id="q" type="text" placeholder="② 検索語（この語を含むやり取りだけを抽出）">
+          </div>
+          <button id="run" class="btn">③ 実行</button>
+          <button id="clear" class="btn" style="background:#6b7280">クリア</button>
+        </div>
+        <details>
+          <summary>使い方メモ</summary>
+          <div class="muted">
+            ・貼り付けたテキストを <b>「あなた:」</b> を境に分割します。各「あなた:」に続く <b>「ChatGPT:」</b> を1セットとして抽出します。<br>
+            ・検索語は <b>あなた と ChatGPT の両方</b>の本文に対して部分一致で判定します（大文字小文字は区別）。<br>
+            ・一致箇所は <mark>ハイライト</mark> 表示します。
+          </div>
+        </details>
+      </section>
+
+      <!-- 右：出力 -->
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <b>結果</b>
+          <div class="kpi"><span id="count">0 件</span></div>
+        </div>
+        <div id="out" class="chat" style="margin-top:8px">
+          <div class="empty">ここに抽出結果が表示されます。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const $ = (sel)=>document.querySelector(sel);
+  const source = $('#source');
+  const q = $('#q');
+  const run = $('#run');
+  const clearBtn = $('#clear');
+  const out = $('#out');
+  const count = $('#count');
+
+  function escapeHTML(s){
+    return s.replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+  function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  /**
+   * 改良版パーサ
+   * - 行頭の「あなた:」のインデックスを列挙
+   * - 各ブロック内で行頭「ChatGPT:」を探し、次の「あなた:」または文末までを取得
+   * - 末尾のやり取りも確実に取得
+   */
+  function parsePairs(text){
+    const t = text.replace(/\r\n?/g, '\n'); // 改行正規化
+
+    // 「あなた:」の開始位置を列挙
+    const youRe = /^あなた:\s*/gm;
+    const youStarts = [];
+    let m;
+    while((m = youRe.exec(t)) !== null){
+      youStarts.push({ index: m.index, len: m[0].length });
+    }
+
+    const pairs = [];
+    for(let i = 0; i < youStarts.length; i++){
+      const { index, len } = youStarts[i];
+      const blockStart = index + len;                       // 「あなた:」の直後
+      const blockEnd   = (i + 1 < youStarts.length) ? youStarts[i+1].index : t.length; // 次の「あなた:」直前or文末
+      const block = t.slice(blockStart, blockEnd);
+
+      // ブロック内の行頭「ChatGPT:」を探す
+      const gptMatch = block.match(/^ChatGPT:\s*/m);
+      if(!gptMatch){
+        // ChatGPT が見つからない場合はスキップ（未返信など）
+        continue;
+      }
+      const gptIndex = block.search(/^ChatGPT:\s*/m);
+
+      const user = block.slice(0, gptIndex).trim();
+      const assistant = block.slice(gptIndex + gptMatch[0].length).trim();
+
+      // 片方が空でも対として扱いたければ条件を緩める
+      if(user.length || assistant.length){
+        pairs.push({ user, assistant });
+      }
+    }
+    return pairs;
+  }
+
+  function highlight(text, needle){
+    if(!needle) return escapeHTML(text);
+    try{
+      const re = new RegExp(escapeRegExp(needle), 'g');
+      return escapeHTML(text).replace(re, m=>`<mark>${escapeHTML(m)}</mark>`);
+    }catch(e){
+      return escapeHTML(text);
+    }
+  }
+
+  function render(results, needle){
+    out.innerHTML = '';
+    if(results.length === 0){
+      out.innerHTML = `<div class="empty">一致するやり取りはありませんでした。</div>`;
+      count.textContent = '0 件';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for(const {user, assistant} of results){
+      const u = document.createElement('div');
+      u.className = 'bubble user';
+      u.innerHTML = `<span class="role">あなた:</span>${highlight(user, needle)}`;
+      const a = document.createElement('div');
+      a.className = 'bubble assistant';
+      a.innerHTML = `<span class="role">ChatGPT:</span>${highlight(assistant, needle)}`;
+      frag.appendChild(u);
+      frag.appendChild(a);
+    }
+    out.appendChild(frag);
+    count.textContent = `${results.length} 件`;
+  }
+
+  function runSearch(){
+    const text = source.value || '';
+    const needle = q.value || '';
+    const pairs = parsePairs(text);
+
+    // 部分一致（あなた/ChatGPT どちらかに含まれていれば採用）
+    const hits = !needle ? pairs : pairs.filter(p =>
+      p.user.includes(needle) || p.assistant.includes(needle)
+    );
+    render(hits, needle);
+  }
+
+  run.addEventListener('click', runSearch);
+  q.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ runSearch(); }});
+  clearBtn.addEventListener('click', ()=>{
+    q.value = '';
+    runSearch();
+    q.focus();
+  });
+
+  // デモ用
+  source.value =
+`あなた: こんにちは！この前の資料の共有、もう一度お願いできますか？
+ChatGPT: こんにちは！もちろんです。資料は次のリンクからダウンロードできます。ポイントを3つに要約すると…
+あなた: 要約の3点目、もう少し詳しく知りたいです。
+ChatGPT: 承知しました。3点目は◯◯の観点で……具体例として……`;
+})();
+</script>
+</body>
+</html>
