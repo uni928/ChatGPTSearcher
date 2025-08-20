@@ -14,11 +14,12 @@
     --green-text:#065f46;
   }
   body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";}
-  .wrap{max-width:1100px;margin:24px auto;padding:0 16px;}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px;transition:max-width .2s ease;}
   .title{font-size:20px;font-weight:700;margin:8px 0 16px;}
-  .grid{display:grid;gap:16px;grid-template-columns:1fr;}
+  .grid{display:grid;gap:16px;grid-template-columns:1fr;transition:grid-template-columns .2s ease;}
   @media (min-width:1024px){ .grid{grid-template-columns:1.2fr .8fr} }
   .card{background:var(--card);border-radius:16px;box-shadow:0 1px 2px rgba(0,0,0,.06);padding:16px}
+
   textarea, input[type="text"]{
     width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     border:1px solid #d1d5db;border-radius:12px;padding:10px;background:#fff;outline:none
@@ -28,25 +29,41 @@
   .btn{
     border:0;border-radius:12px;padding:10px 14px;background:#111827;color:#fff;cursor:pointer;font-weight:600
   }
+  .btn.small{padding:6px 10px;line-height:1}
   .btn:disabled{opacity:.6;cursor:not-allowed}
   .muted{color:#6b7280;font-size:12px}
+
   .chat{display:flex;flex-direction:column;gap:10px}
-  .bubble {
-    width: 320px;        /* 固定幅 */
-    padding: 10px;
-    border-radius: 12px;
-    word-wrap: break-word; /* 長文は折り返し */
-    white-space: pre-wrap; /* 改行維持 */
+  .bubble{
+    /* 通常時の吹き出し幅（狭め） */
+    width: min(320px, calc(100% - 32px));
+    padding:10px;
+    border-radius:12px;
+    word-wrap:break-word;
+    white-space:pre-wrap;
+    transition: width .2s ease;
   }
   .user{align-self:flex-end;background:var(--green);color:var(--green-text);border-top-right-radius:6px}
   .assistant{align-self:flex-start;background:var(--gray);color:var(--gray-text);border-top-left-radius:6px}
   .role{display:block;font-size:12px;font-weight:700;margin-bottom:4px;opacity:.8}
   .kpi{display:flex;gap:12px;align-items:center;margin:8px 0 0;font-size:12px;color:#6b7280}
+  .kpi-right{display:flex;gap:8px;align-items:center}
   .empty{padding:12px;border:1px dashed #d1d5db;border-radius:12px;color:#6b7280;background:#fafafa}
   mark{padding:0 .15em;border-radius:4px}
   details{margin-top:8px}
   .row{display:flex;gap:8px;align-items:center}
   .row > *{flex:1}
+
+  /* === ここから拡大（＋）状態のスタイル === */
+  body.expand-chat .wrap{max-width:100vw}
+  body.expand-chat .grid{grid-template-columns:1fr}
+  body.expand-chat .grid .left{display:none}      /* 入力パネルを隠す */
+  body.expand-chat .grid .right{min-height:calc(100vh - 120px)} /* 見やすく */
+  /* 拡大時は吹き出しもワイドに */
+  body.expand-chat .bubble{
+    width: min(480px, calc(100% - 32px));
+  }
+  /* （吹き出しは固定幅なので横には広がりません。行が増えるだけです） */
 </style>
 </head>
 <body>
@@ -55,7 +72,7 @@
 
     <div class="grid">
       <!-- 左：入力 -->
-      <section class="card">
+      <section class="card left">
         <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C した内容をそのまま）</label>
         <textarea id="source" placeholder="例：
 あなた: こんにちは！この前の件ですが…
@@ -81,10 +98,13 @@ ChatGPT: 承知しました。手順は……"></textarea>
       </section>
 
       <!-- 右：出力 -->
-      <section class="card">
+      <section class="card right">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <b>結果</b>
-          <div class="kpi"><span id="count">0 件</span></div>
+          <div class="kpi-right">
+            <button id="toggleExpand" class="btn small" aria-pressed="false" title="チャット欄を広げる">＋</button>
+            <div class="kpi"><span id="count">0 件</span></div>
+          </div>
         </div>
         <div id="out" class="chat" style="margin-top:8px">
           <div class="empty">ここに抽出結果が表示されます。</div>
@@ -102,51 +122,34 @@ ChatGPT: 承知しました。手順は……"></textarea>
   const clearBtn = $('#clear');
   const out = $('#out');
   const count = $('#count');
+  const toggleBtn = $('#toggleExpand');
 
   function escapeHTML(s){
     return s.replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
   function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-  /**
-   * 改良版パーサ
-   * - 行頭の「あなた:」のインデックスを列挙
-   * - 各ブロック内で行頭「ChatGPT:」を探し、次の「あなた:」または文末までを取得
-   * - 末尾のやり取りも確実に取得
-   */
+  /* 改良版パーサ（末尾のやり取りも取得） */
   function parsePairs(text){
-    const t = text.replace(/\r\n?/g, '\n'); // 改行正規化
-
-    // 「あなた:」の開始位置を列挙
+    const t = text.replace(/\r\n?/g, '\n');
     const youRe = /^あなた:\s*/gm;
     const youStarts = [];
     let m;
     while((m = youRe.exec(t)) !== null){
       youStarts.push({ index: m.index, len: m[0].length });
     }
-
     const pairs = [];
     for(let i = 0; i < youStarts.length; i++){
       const { index, len } = youStarts[i];
-      const blockStart = index + len;                       // 「あなた:」の直後
-      const blockEnd   = (i + 1 < youStarts.length) ? youStarts[i+1].index : t.length; // 次の「あなた:」直前or文末
+      const blockStart = index + len;
+      const blockEnd   = (i + 1 < youStarts.length) ? youStarts[i+1].index : t.length;
       const block = t.slice(blockStart, blockEnd);
-
-      // ブロック内の行頭「ChatGPT:」を探す
       const gptMatch = block.match(/^ChatGPT:\s*/m);
-      if(!gptMatch){
-        // ChatGPT が見つからない場合はスキップ（未返信など）
-        continue;
-      }
+      if(!gptMatch) continue;
       const gptIndex = block.search(/^ChatGPT:\s*/m);
-
       const user = block.slice(0, gptIndex).trim();
       const assistant = block.slice(gptIndex + gptMatch[0].length).trim();
-
-      // 片方が空でも対として扱いたければ条件を緩める
-      if(user.length || assistant.length){
-        pairs.push({ user, assistant });
-      }
+      if(user.length || assistant.length) pairs.push({ user, assistant });
     }
     return pairs;
   }
@@ -187,8 +190,6 @@ ChatGPT: 承知しました。手順は……"></textarea>
     const text = source.value || '';
     const needle = q.value || '';
     const pairs = parsePairs(text);
-
-    // 部分一致（あなた/ChatGPT どちらかに含まれていれば採用）
     const hits = !needle ? pairs : pairs.filter(p =>
       p.user.includes(needle) || p.assistant.includes(needle)
     );
@@ -203,7 +204,15 @@ ChatGPT: 承知しました。手順は……"></textarea>
     q.focus();
   });
 
-  // デモ用
+  /* ＋／− でチャット欄拡大縮小 */
+  toggleBtn.addEventListener('click', ()=>{
+    const expanded = document.body.classList.toggle('expand-chat');
+    toggleBtn.textContent = expanded ? '−' : '＋';
+    toggleBtn.title = expanded ? 'チャット欄を元に戻す' : 'チャット欄を広げる';
+    toggleBtn.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+  });
+
+  /* デモ用データ */
   source.value =
 `あなた: こんにちは！この前の資料の共有、もう一度お願いできますか？
 ChatGPT: こんにちは！もちろんです。資料は次のリンクからダウンロードできます。ポイントを3つに要約すると…
