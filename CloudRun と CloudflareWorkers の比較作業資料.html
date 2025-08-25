@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ChatGPTログ抽出（「あなた:」で分割 & 検索）</title>
+<style>
+  :root{
+    --bg:#f6f7f9;
+    --card:#ffffff;
+    --gray:#e5e7eb;
+    --gray-text:#374151;
+    --green:#d1fae5;
+    --green-text:#065f46;
+  }
+  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px;transition:max-width .2s ease;}
+  .title{font-size:20px;font-weight:700;margin:8px 0 16px;}
+  .grid{display:grid;gap:16px;grid-template-columns:1fr;transition:grid-template-columns .2s ease;}
+  @media (min-width:1024px){ .grid{grid-template-columns:1.2fr .8fr} }
+  .card{background:var(--card);border-radius:16px;box-shadow:0 1px 2px rgba(0,0,0,.06);padding:16px}
+
+  textarea, input[type="text"]{
+    width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    border:1px solid #d1d5db;border-radius:12px;padding:10px;background:#fff;outline:none
+  }
+  textarea{min-height:320px;resize:vertical}
+  .controls{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .btn{
+    border:0;border-radius:12px;padding:10px 14px;background:#111827;color:#fff;cursor:pointer;font-weight:600
+  }
+  .btn.small{padding:6px 10px;line-height:1}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .muted{color:#6b7280;font-size:12px}
+
+  .chat{display:flex;flex-direction:column;gap:10px}
+  .bubble{
+    /* 通常時の吹き出し幅（狭め） */
+    width: min(320px, calc(100% - 32px));
+    padding:10px;
+    border-radius:12px;
+    word-wrap:break-word;
+    white-space:pre-wrap;
+    transition: width .2s ease;
+  }
+  .user{align-self:flex-end;background:var(--green);color:var(--green-text);border-top-right-radius:6px}
+  .assistant{align-self:flex-start;background:var(--gray);color:var(--gray-text);border-top-left-radius:6px}
+  .role{display:block;font-size:12px;font-weight:700;margin-bottom:4px;opacity:.8}
+  .kpi{display:flex;gap:12px;align-items:center;margin:8px 0 0;font-size:12px;color:#6b7280}
+  .kpi-right{display:flex;gap:8px;align-items:center}
+  .empty{padding:12px;border:1px dashed #d1d5db;border-radius:12px;color:#6b7280;background:#fafafa}
+  mark{padding:0 .15em;border-radius:4px}
+  details{margin-top:8px}
+  .row{display:flex;gap:8px;align-items:center}
+  .row > *{flex:1}
+
+  /* === ここから拡大（＋）状態のスタイル === */
+  body.expand-chat .wrap{max-width:100vw}
+  body.expand-chat .grid{grid-template-columns:1fr}
+  body.expand-chat .grid .left{display:none}      /* 入力パネルを隠す */
+  body.expand-chat .grid .right{min-height:calc(100vh - 120px)} /* 見やすく */
+  /* 拡大時は吹き出しもワイドに */
+  body.expand-chat .bubble{
+    width: min(480px, calc(100% - 32px));
+  }
+  /* （吹き出しは固定幅なので横には広がりません。行が増えるだけです） */
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">ChatGPTログ抽出ツール（あなた/ChatGPT 形式表示）</div>
+
+    <div class="grid">
+      <!-- 左：入力 -->
+      <section class="card left">
+        <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C した内容をそのまま）</label>
+        <textarea id="source" placeholder="例：
+あなた: こんにちは！この前の件ですが…
+ChatGPT: こんにちは！もちろん、続きは…
+あなた: では○○を△△にして…
+ChatGPT: 承知しました。手順は……"></textarea>
+
+        <div class="controls">
+          <div class="row" style="flex:1 1 auto">
+            <input id="q" type="text" placeholder="② 検索語（この語を含むやり取りだけを抽出）">
+          </div>
+          <button id="run" class="btn">③ 実行</button>
+          <button id="clear" class="btn" style="background:#6b7280">クリア</button>
+        </div>
+        <details>
+          <summary>使い方メモ</summary>
+          <div class="muted">
+            ・貼り付けたテキストを <b>「あなた:」</b> を境に分割します。各「あなた:」に続く <b>「ChatGPT:」</b> を1セットとして抽出します。<br>
+            ・検索語は <b>あなた と ChatGPT の両方</b>の本文に対して部分一致で判定します（大文字小文字は区別）。<br>
+            ・一致箇所は <mark>ハイライト</mark> 表示します。
+          </div>
+        </details>
+      </section>
+
+      <!-- 右：出力 -->
+      <section class="card right">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <b>結果</b>
+          <div class="kpi-right">
+            <button id="toggleExpand" class="btn small" aria-pressed="false" title="チャット欄を広げる">＋</button>
+            <div class="kpi"><span id="count">0 件</span></div>
+          </div>
+        </div>
+        <div id="out" class="chat" style="margin-top:8px">
+          <div class="empty">ここに抽出結果が表示されます。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const $ = (sel)=>document.querySelector(sel);
+  const source = $('#source');
+  const q = $('#q');
+  const run = $('#run');
+  const clearBtn = $('#clear');
+  const out = $('#out');
+  const count = $('#count');
+  const toggleBtn = $('#toggleExpand');
+
+  function escapeHTML(s){
+    return s.replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+  function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  /* 改良版パーサ（末尾のやり取りも取得） */
+  function parsePairs(text){
+    const t = text.replace(/\r\n?/g, '\n');
+    const youRe = /^あなた:\s*/gm;
+    const youStarts = [];
+    let m;
+    while((m = youRe.exec(t)) !== null){
+      youStarts.push({ index: m.index, len: m[0].length });
+    }
+    const pairs = [];
+    for(let i = 0; i < youStarts.length; i++){
+      const { index, len } = youStarts[i];
+      const blockStart = index + len;
+      const blockEnd   = (i + 1 < youStarts.length) ? youStarts[i+1].index : t.length;
+      const block = t.slice(blockStart, blockEnd);
+      const gptMatch = block.match(/^ChatGPT:\s*/m);
+      if(!gptMatch) continue;
+      const gptIndex = block.search(/^ChatGPT:\s*/m);
+      const user = block.slice(0, gptIndex).trim();
+      const assistant = block.slice(gptIndex + gptMatch[0].length).trim();
+      if(user.length || assistant.length) pairs.push({ user, assistant });
+    }
+    return pairs;
+  }
+
+  function highlight(text, needle){
+    if(!needle) return escapeHTML(text);
+    try{
+      const re = new RegExp(escapeRegExp(needle), 'g');
+      return escapeHTML(text).replace(re, m=>`<mark>${escapeHTML(m)}</mark>`);
+    }catch(e){
+      return escapeHTML(text);
+    }
+  }
+
+  function render(results, needle){
+    out.innerHTML = '';
+    if(results.length === 0){
+      out.innerHTML = `<div class="empty">一致するやり取りはありませんでした。</div>`;
+      count.textContent = '0 件';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for(const {user, assistant} of results){
+      const u = document.createElement('div');
+      u.className = 'bubble user';
+      u.innerHTML = `<span class="role">あなた:</span>${highlight(user, needle)}`;
+      const a = document.createElement('div');
+      a.className = 'bubble assistant';
+      a.innerHTML = `<span class="role">ChatGPT:</span>${highlight(assistant, needle)}`;
+      frag.appendChild(u);
+      frag.appendChild(a);
+    }
+    out.appendChild(frag);
+    count.textContent = `${results.length} 件`;
+  }
+
+  function runSearch(){
+    const text = source.value || '';
+    const needle = q.value || '';
+    const pairs = parsePairs(text);
+    const hits = !needle ? pairs : pairs.filter(p =>
+      p.user.includes(needle) || p.assistant.includes(needle)
+    );
+    render(hits, needle);
+  }
+
+  run.addEventListener('click', runSearch);
+  q.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ runSearch(); }});
+  clearBtn.addEventListener('click', ()=>{
+    q.value = '';
+    runSearch();
+    q.focus();
+  });
+
+  /* ＋／− でチャット欄拡大縮小 */
+  toggleBtn.addEventListener('click', ()=>{
+    const expanded = document.body.classList.toggle('expand-chat');
+    toggleBtn.textContent = expanded ? '−' : '＋';
+    toggleBtn.title = expanded ? 'チャット欄を元に戻す' : 'チャット欄を広げる';
+    toggleBtn.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+  });
+
+  /* デモ用データ */
+  source.value =
+`あなた:
+Cloud Run は月に 100 ユーザーが 1000 万リクエストをした場合、料金はいくらかかりますか？
+ChatGPT:
+Cloud Run の料金を「100 ユーザーが 1,000 万リクエスト/月をした場合」で見積もってみましょう。以下、代表例（Tier 1 リージョン／リクエストベース課金）に基づく簡易モデルです。
+
+料金モデルの前提
+無料枠（毎月）：
+
+リクエスト：最初の 200 万件は無料
+
+vCPU時間：最初の 180,000 秒は無料
+
+メモリ時間：最初の 360,000 GiB秒は無料
+　
+Economize Cloud
++3
+Google Cloud
++3
+G2
++3
+
+超過時の単価（リクエストベース課金）：
+
+リクエスト：100 万件あたり $0.40
+→ 1 リクエスト = $0.0000004
+
+vCPU：1 vCPU秒あたり $0.000024
+
+メモリ：1 GiB秒あたり $0.0000025
+　
+Economize Cloud
++3
+Google Cloud
++3
+Google Cloud
++3
+
+利用状況の仮定（例にならって）：
+
+平均レイテンシ：1 秒／リクエスト（サーバーで処理する時間）
+
+1 インスタンス = 1 vCPU + 0.5 GiB メモリ
+
+同時リクエスト処理能力：80件／インスタンス
+　
+Google Cloud
++2
+Google Cloud
++2
+
+5つの数値で試算
+1) リクエスト料金
+1,000 万件 → 10 × 100 万件
+
+合計：10 × $0.40 = $4.00
+
+無料枠（200 万件＝$0.80分）を差し引くと：$3.20
+　
+Google Cloud
++2
+Google Cloud
++2
+
+2) vCPU 時間料金
+合計 vCPU秒数：
+1
+ 
+000
+ 
+万
+×
+1
+ 
+秒
+80
+=
+125
+ 
+000
+ vCPU秒
+80
+1000万×1秒
+​
+ =125000 vCPU秒
+
+コスト：125,000 × $0.000024 = $3.00
+
+無料枠（180,000 秒）に収まるため、実質 $0.00
+　
+Google Cloud
++6
+Google Cloud
++6
+Google Cloud
++6
+
+3) メモリ使用料金
+合計 GiB秒数：
+125
+ 
+000
+ vCPU秒
+×
+0.5
+ GiB
+=
+62
+,
+500
+ GiB秒
+125000 vCPU秒×0.5 GiB=62,500 GiB秒
+
+コスト：62,500 × $0.0000025 = $0.15625
+
+無料枠（360,000 GiB秒）に収まるため、実質 $0.00
+　
+Google Cloud
++1
+
+4) インスタンスのアイドル時間（無料枠のみの例では省略可）
+今回は「リクエストベース課金」「インスタンスのアイドルは0」と仮定して試算
+　
+Google Cloud
++1
+
+5) 合計コスト（無料枠考慮後）
+リクエスト：$3.20
+
+vCPU：$0.00
+
+メモリ：$0.00
+
+→ 合計 ≈ $3.20／月
+
+まとめ表
+項目	試算内容	コスト（無料枠適用後）
+リクエスト	1,000万件 → $4.00 → $3.20	$3.20
+vCPU	125,000 vCPU秒 → 無料枠内	$0.00
+メモリ	62,500 GiB秒 → 無料枠内	$0.00
+合計	—	$3.20
+注意点
+リージョンやインスタンス構成によって差異あり：vCPU数やメモリ量・同時処理数・レイテンシなどが変わると、コストに影響します。
+
+アイドルインスタンス（最小インスタンス）の設定がある場合は別途課金になる可能性あり。
+
+ネットワーク転送コスト（特にクロスリージョンや外部向け）が発生するケースもあります。
+
+日本円換算も含む場合は、為替レートに応じた額になります。
+
+結論
+Cloud Run を「100 ユーザーで月 1,000 万リクエスト」程度使う規模なら、メモリ・vCPUの利用は無料枠内に収まり、実際の課金はリクエスト料金のみ：約 USD 3.20／月というリーズナブルさです。
+
+もっと高精度な見積もりが必要な場合は、インスタンス仕様（CPU数・メモリサイズ）、平均処理時間、アイドルインスタンス設定の有無、リージョンなどを教えていただければ、さらに詳細な計算も可能です！
+
+あなた:
+Cloud Run と Cloudflare Workers はどちらの方が処理が高速だと思いますか？
+ChatGPT:
+
+思考時間: 12s
+ざっくり言うと——グローバルに散らばるユーザーへの“最初の一文字までの速さ（TTFB）”は Cloudflare Workers が有利、重い処理や長時間の実行・自由度は Cloud Run が有利というのが実務での体感＆仕様からの結論です。
+
+なぜ Workers が速いことが多い？
+エッジ実行：Cloudflare の世界中のPoPで実行され、ユーザーの近くで応答できるため、ネットワーク遅延が小さい。Cloudflare 自身のネットワーク計測でも上位ASでの接続時間が改善し続けていると公表されています。 
+The Cloudflare Blog
+
+コールドスタート対策：Workers は V8 Isolate ベースで、“ゼロ”コールドスタートをうたう仕組みを導入しており、起動遅延がごく小さい（ミリ秒級）。 
+The Cloudflare Blog
+
+では Cloud Run は遅いの？
+いいえ。コンテナベースなので起動コストはあるものの、第2世代実行環境で CPU/ネットワーク性能が強化されており、最小インスタンスや起動時CPUブーストの設定でコールドスタート影響も抑えられます。CPUコア数も増やせるため、重い/並列処理は得意です。 
+Google Cloud
++1
+
+長め・重めのタスクは？
+Workers も 2025年に CPU時間上限が引き上げられ、1リクエストで最大5分のCPU時間まで対応（Unboundなど）。ただし、依然として実行モデルやエコシステムに制約がある点は理解しておくと良いです。 
+Cloudflare Docs
+Zenn
+
+Cloud Run は任意の言語/ランタイムのコンテナをそのまま動かせ、CPU/メモリの自由度や同時実行の調整が可能。重いAI前処理や大きな依存関係があるときに向きます。 
+Google Cloud
+Zenn
+
+実務での目安（決め方）
+最小TTFB・世界中のユーザーに均一な体感速度 → Workers（エッジ + ほぼコールドスタート無し）。 
+The Cloudflare Blog
++1
+
+CPUを多く使う/長く回す処理、特殊ランタイムやネイティブ依存 → Cloud Run（コンテナ自由度 + 強いCPU/ネットワーク + 起動ブースト/最小インスタンス）。 
+Google Cloud
++1
+
+まとめ：“ユーザーに近い軽量処理＝Workers が体感速いことが多い”、“重くて自由度が要る処理＝Cloud Run の方が向く”。
+市郎さんのワークロード（APIストリーミング中心か、CPU重めの前処理があるか、世界分散か）を教えていただければ、より具体的な構成＆チューニング案に落とし込みます。
+
+あなた:
+一瞬で終了する処理の場合、Cloud Run と Cloudflare Workers は 1 リクエストあたりどの程度の遅延差があると思いますか？
+ChatGPT:
+
+思考時間: 28s
+短時間（“Hello, world”級）の処理だけで見ると、体感はだいたいこんな差になりやすいです（同一大陸・混雑少なめ想定）：
+
+Cloudflare Workers：TTFB ≈ 20–50ms 程度が出やすい（ユーザー近傍のエッジで実行／V8 Isolateでコールドスタートほぼゼロ）。 
+The Cloudflare Blog
++1
+
+Cloud Run（ウォーム時）：TTFB ≈ 80–200ms 程度を見込むのが現実的（コンテナ越しのルーティング分オーバーヘッドがある）。最小インスタンス＆起動時CPUブーストで短縮可能。 
+Google Cloud
++1
+
+Cloud Run（コールドスタート時）：+数百ms〜数秒 が乗りうる（最小インスタンスを0にしている場合）。最小インスタンス>0でほぼ回避。 
+Google Cloud
+
+ざっくり差分の目安
+ウォーム同士の比較：Workers が Cloud Runより ~50–150ms 速い ことが多い。
+
+Cloud Runがコールドのとき：Workers との差が ~0.5–2秒以上 開くケースも（アプリ・言語・依存関係で変動）。 
+The Cloudflare Blog
+Google Cloud
+
+補足
+Workers はエッジ実行＆“コールドスタート解消”の設計で、最初の1バイトまでが速いのが強み。 
+The Cloudflare Blog
++1
+
+Cloud Run も 最小インスタンス と 起動時CPUブースト を使えば、安定して100ms級まで寄せられることが多いです（処理/地域/ネット次第）。 
+Google Cloud
++1
+
+もし市郎さんの想定が「東京近辺のユーザーが多い」「Node/Goの超軽量API」「1リクエスト即終了」なら、Workersの方が平均TTFBは小さく出やすいです。
+一方で「コンテナでしか動かない依存がある」「少し重い前処理がある」「同時実行を細かく制御したい」なら、Cloud Run + 最小インスタンスで十分速く、運用もしやすいです。
+
+あなた: 以上が ChatGPT とのやりとりです。このやり取りの内容から
+ChatGPT: リクエストの度に 0.05秒 ～ 0.15秒 程 Cloudflare の方が早い
+あなた: という結果に落ち着きます。
+ChatGPT: なので処理速度を大切にしたいため、Cloudflare を使用したいというのが思うところになります。`;
+runSearch();
+const expanded = document.body.classList.toggle('expand-chat');
+    toggleBtn.textContent = expanded ? '−' : '＋';
+    toggleBtn.title = expanded ? 'チャット欄を元に戻す' : 'チャット欄を広げる';
+    toggleBtn.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+})();
+</script>
+</body>
+</html>
