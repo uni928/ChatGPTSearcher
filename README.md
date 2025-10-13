@@ -6,3 +6,7 @@ ChatGPT のアプリ版で Ctrl+A → Ctrl+V した内容をメモ帳でバッ�
 https://uni928.github.io/ChatGPTSearcher/index3.html
 
 ChatGPT のチャット履歴を貼り付けて index.html をダウンロードボタンを押す事で、チャット履歴をバックアップできる。
+
+https://uni928.github.io/ChatGPTSearcher/index4.html
+
+ChatGPT の自分の発言のみを抽出して閲覧するサイトです。
