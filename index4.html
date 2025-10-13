@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ChatGPTログ抽出（クリックで回答を差し込み表示）</title>
+<style>
+  :root{
+    --bg:#f6f7f9;
+    --card:#ffffff;
+    --gray:#e5e7eb;
+    --gray-text:#374151;
+    --green:#d1fae5;
+    --green-text:#065f46;
+    --ink:#111827;
+  }
+  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";color:var(--ink);}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px;transition:max-width .2s ease;}
+  .title{font-size:20px;font-weight:700;margin:8px 0 16px;}
+  .grid{display:grid;gap:16px;grid-template-columns:1fr;transition:grid-template-columns .2s ease;}
+  @media (min-width:1024px){ .grid{grid-template-columns:1.2fr .8fr } }
+  .card{background:var(--card);border-radius:16px;box-shadow:0 1px 2px rgba(0,0,0,.06);padding:16px}
+
+  textarea, input[type="text"]{
+    width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    border:1px solid #d1d5db;border-radius:12px;padding:10px;background:#fff;outline:none
+  }
+  textarea{min-height:320px;resize:vertical}
+  .controls{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .btn{
+    border:0;border-radius:12px;padding:10px 14px;background:#111827;color:#fff;cursor:pointer;font-weight:600
+  }
+  .btn.small{padding:6px 10px;line-height:1}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .muted{color:#6b7280;font-size:12px}
+
+  /* ===== 右パネル（一覧：自分の発言のみ） ===== */
+  .chatlist{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    min-height:400px;
+  }
+  .bubble{
+    padding:10px;
+    border-radius:12px;
+    word-wrap:break-word;
+    word-break:break-word;
+    white-space:pre-wrap;
+  }
+  .bubble.user{
+    align-self:flex-end;
+    background:var(--green);
+    color:var(--green-text);
+    border-top-right-radius:6px;
+    cursor:pointer;
+    width:min(420px, calc(100% - 32px)); /* 自分の発言が右に見切れにくい幅 */
+  }
+  .bubble.user:hover{filter:brightness(.98)}
+  .bubble.assistant{
+    align-self:flex-start;
+    background:var(--gray);
+    color:var(--gray-text);
+    border-top-left-radius:6px;
+    /* ご要望：見切れ防止の max-width */
+    max-width:min(560px, calc(100% - 32px));
+  }
+  .role{display:block;font-size:12px;font-weight:700;margin-bottom:4px;opacity:.8}
+  .empty{padding:12px;border:1px dashed #d1d5db;border-radius:12px;color:#6b7280;background:#fafafa}
+  .kpi{display:flex;gap:12px;align-items:center;margin:8px 0 0;font-size:12px;color:#6b7280}
+  .kpi-right{display:flex;gap:8px;align-items:center}
+  mark{padding:0 .15em;border-radius:4px}
+
+  /* === 拡大表示（＋） === */
+  body.expand-chat .wrap{max-width:100vw}
+  body.expand-chat .grid{grid-template-columns:1fr}
+  body.expand-chat .grid .left{display:none}
+  body.expand-chat .grid .right{min-height:calc(100vh - 120px)}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">ChatGPTログ抽出ツール（クリックで回答を差し込み表示）</div>
+
+    <div class="grid">
+      <!-- 左：入力 -->
+      <section class="card left">
+        <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C した内容をそのまま）</label>
+        <textarea id="source" placeholder="例：
+あなた: こんにちは！この前の件ですが…
+ChatGPT: こんにちは！もちろん、続きは…
+あなた: では○○を△△にして…
+ChatGPT: 承知しました。手順は……"></textarea>
+
+        <div class="controls">
+          <div class="row" style="flex:1 1 auto">
+            <input id="q" type="text" placeholder="② 検索語（この語を含む発言だけを抽出）">
+          </div>
+          <button id="run" class="btn">③ 実行</button>
+          <button id="clear" class="btn" style="background:#6b7280">クリア</button>
+        </div>
+        <details>
+          <summary>使い方メモ</summary>
+          <div class="muted">
+            ・貼り付けたテキストを <b>「あなた:」</b> を境に分割し、各「あなた:」に続く <b>「ChatGPT:」</b> をひも付けます。<br>
+            ・右側には <b>あなたの発言のみ</b> を一覧表示。クリックすると、その発言と次の発言の間に ChatGPT を差し込みます（再クリックで閉じる）。<br>
+            ・検索語は <b>あなた／ChatGPT の両方</b>の本文に対して部分一致で判定（大文字小文字は区別）。
+          </div>
+        </details>
+      </section>
+
+      <!-- 右：自分の発言一覧（クリックで間に差し込み） -->
+      <section class="card right">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <b>結果（あなたの発言一覧）</b>
+          <div class="kpi-right">
+            <button id="toggleExpand" class="btn small" aria-pressed="false" title="チャット欄を広げる">＋</button>
+            <div class="kpi"><span id="count">0 件</span></div>
+          </div>
+        </div>
+
+        <div id="out" class="chatlist" style="margin-top:8px">
+          <div class="empty">ここに「あなた」の発言が一覧表示されます。クリックで、その次の発言の手前に ChatGPT を差し込みます。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const $ = (sel)=>document.querySelector(sel);
+  const source = $('#source');
+  const q = $('#q');
+  const run = $('#run');
+  const clearBtn = $('#clear');
+  const out = $('#out');
+  const count = $('#count');
+  const toggleBtn = $('#toggleExpand');
+
+  function escapeHTML(s){
+    return s.replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+  function escapeRegExp(s){
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  // 「あなた:」→直後の「ChatGPT:」を1セットに
+  function parsePairs(text){
+    const t = text.replace(/\r\n?/g, '\n');
+    const youRe = /^あなた:\s*/gm;
+    const youStarts = [];
+    let m;
+    while((m = youRe.exec(t)) !== null){
+      youStarts.push({ index: m.index, len: m[0].length });
+    }
+    const pairs = [];
+    for(let i = 0; i < youStarts.length; i++){
+      const { index, len } = youStarts[i];
+      const blockStart = index + len;
+      const blockEnd   = (i + 1 < youStarts.length) ? youStarts[i+1].index : t.length;
+      const block = t.slice(blockStart, blockEnd);
+      const gptMatch = block.match(/^ChatGPT:\s*/m);
+      if(!gptMatch) continue;
+      const gptIndex = block.search(/^ChatGPT:\s*/m);
+      const user = block.slice(0, gptIndex).trim();
+      const assistant = block.slice(gptIndex + gptMatch[0].length).trim();
+      if(user.length || assistant.length) pairs.push({ user, assistant });
+    }
+    return pairs;
+  }
+
+  function highlight(text, needle){
+    if(!needle) return escapeHTML(text);
+    try{
+      const re = new RegExp(escapeRegExp(needle), 'g');
+      return escapeHTML(text).replace(re, m=>`<mark>${escapeHTML(m)}</mark>`);
+    }catch(e){
+      return escapeHTML(text);
+    }
+  }
+
+  // 右側には「あなた」の発言のみを並べ、クリックした要素の直後に ChatGPT を差し込む
+  function renderUsersOnly(pairs, needle){
+    out.innerHTML = '';
+    if(pairs.length === 0){
+      out.innerHTML = `<div class="empty">一致するやり取りはありませんでした。</div>`;
+      count.textContent = '0 件';
+      return;
+    }
+
+    // 発言DOMを先に全部作る（自分の発言のみ）
+    const nodes = [];
+    pairs.forEach((p, i)=>{
+      const u = document.createElement('div');
+      u.className = 'bubble user';
+      u.innerHTML = `<span class="role">あなた:</span>${highlight(p.user, needle)}`;
+      u.tabIndex = 0;
+      u.setAttribute('role', 'button');
+      u.setAttribute('aria-expanded', 'false');
+      u.dataset.index = String(i);
+      nodes.push(u);
+    });
+
+    // クリック時の差し込み動作（トグル）
+    function toggleAssistantFor(userNode){
+      const idx = Number(userNode.dataset.index);
+      const assistantSelector = `.assistant[data-for="${idx}"]`;
+
+      // 既に直後がそのアシスタントなら閉じる
+      const next = userNode.nextSibling;
+      if(next && next.nodeType === 1 && next.matches(assistantSelector)){
+        next.remove();
+        userNode.setAttribute('aria-expanded', 'false');
+        return;
+      }
+
+      // 新規作成（本文はハイライト適用）
+      const assDiv = document.createElement('div');
+      assDiv.className = 'bubble assistant';
+      assDiv.dataset.for = String(idx);
+      assDiv.innerHTML = `<span class="role">ChatGPT:</span>${highlight(pairs[idx].assistant, q.value || '')}`;
+
+      // 直後に差し込む（次の自分の発言の手前＝直後の位置）
+      userNode.after(assDiv);
+      userNode.setAttribute('aria-expanded', 'true');
+    }
+
+    // リストへ追加 & イベント付与
+    const frag = document.createDocumentFragment();
+    nodes.forEach(node=>{
+      node.addEventListener('click', ()=>toggleAssistantFor(node));
+      node.addEventListener('keydown', e=>{
+        if(e.key==='Enter' || e.key===' '){
+          e.preventDefault();
+          toggleAssistantFor(node);
+        }
+      });
+      frag.appendChild(node);
+    });
+    out.appendChild(frag);
+
+    count.textContent = `${pairs.length} 件`;
+  }
+
+  function runSearch(){
+    const text = source.value || '';
+    const needle = q.value || '';
+    const pairs = parsePairs(text);
+    const hits = !needle ? pairs : pairs.filter(p =>
+      p.user.includes(needle) || p.assistant.includes(needle)
+    );
+    renderUsersOnly(hits, needle);
+  }
+
+  run.addEventListener('click', runSearch);
+  q.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ runSearch(); }});
+  clearBtn.addEventListener('click', ()=>{
+    q.value = '';
+    runSearch();
+    q.focus();
+  });
+
+  // ＋／− で右側をワイドに
+  toggleBtn.addEventListener('click', ()=>{
+    const expanded = document.body.classList.toggle('expand-chat');
+    toggleBtn.textContent = expanded ? '−' : '＋';
+    toggleBtn.title = expanded ? 'チャット欄を元に戻す' : 'チャット欄を広げる';
+    toggleBtn.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+  });
+
+  // デモ用
+  source.value =
+`あなた: ここにやり取りを貼り付けて下さい。
+ChatGPT: 開くとやり取りをチャット形式で見る事ができます。
+あなた: Ctrl + A と Ctrl + C でコピーできます。
+ChatGPT: html ファイルに貼り付けて保存すれば共有可能です。`;
+  runSearch();
+})();
+</script>
+</body>
+</html>
