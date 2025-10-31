@@ -15,6 +15,9 @@
 <body>
   <h3>配布用HTMLに埋め込む内容</h3>
   <textarea id="src" placeholder="ここに会話ログを貼り付けてください"></textarea>
+  <label style="display:flex;align-items:center;gap:6px; user-select:none; margin-left:8px;">
+              <input id="onlyUserChecked" type="checkbox"> 自分の発言だけ抽出する
+            </label><br>
   <div class="row">
     <button id="make">index.html をダウンロード</button>
   </div>
@@ -23,26 +26,26 @@
 (function(){
   const ta = document.getElementById('src');
   const btn = document.getElementById('make');
+  const onlyUserCheckedEL = document.getElementById('onlyUserChecked');
 
   // 入力を配布用テンプレのテンプレートリテラル内に安全に埋め込むためのエスケープ
   function sanitizeForTemplate(text){
     return text
-      .replace(/\\/g, '\\\\')            // バックスラッシュ
-      .replace(/`/g, '\\`')             // バッククォート
-      .replace(/\$\{/g, '\\${')         // テンプレ展開阻止
-      .replace(/<\/script>/gi, '<\\/script>') // script 終了阻止
-      .replace(/'/g, '\\`');            // ご要望：' → \`
+      .replace(/\\/g, '\\\\')                 // バックスラッシュ
+      .replace(/`/g, '\\`')                  // バッククォート
+      .replace(/\$\{/g, '\\${')              // テンプレ展開阻止
+      .replace(/<\/script>/gi, '<\\/script>')// /script> 早期終了阻止
+      .replace(/'/g, '\\`');                 // ご要望：' → \`
   }
 
-  // 出力する配布物（先ほどの「ChatGPTログ抽出ツール」）を丸ごと生成
-  // ※ 出力側スクリプト内の `${` はすべて `\${` にして外側テンプレ展開を回避
+  // 生成される index.html の全文（自分の発言だけ抽出チェック＋クリックで左下に挿入）
   function buildOutputHtml(injected){
     return `<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ChatGPTログ抽出（「あなた:」で分割 & 検索）</title>
+<title>ChatGPTログ抽出（あなた/ChatGPT・ユーザーのみ抽出対応）</title>
 <style>
   :root{
     --bg:#f6f7f9;
@@ -51,8 +54,10 @@
     --gray-text:#374151;
     --green:#d1fae5;
     --green-text:#065f46;
+    --ink:#111827;
+    --shadow:0 8px 20px rgba(0,0,0,.12);
   }
-  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";}
+  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";color:var(--ink);}
   .wrap{max-width:1100px;margin:24px auto;padding:0 16px;transition:max-width .2s ease;}
   .title{font-size:20px;font-weight:700;margin:8px 0 16px;}
   .grid{display:grid;gap:16px;grid-template-columns:1fr;transition:grid-template-columns .2s ease;}
@@ -63,53 +68,97 @@
     border:1px solid #d1d5db;border-radius:12px;padding:10px;background:#fff;outline:none
   }
   textarea{min-height:320px;resize:vertical}
-  .controls{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .controls{display:flex;gap:12px;align-items:center;margin-top:8px;flex-wrap:wrap}
   .btn{
     border:0;border-radius:12px;padding:10px 14px;background:#111827;color:#fff;cursor:pointer;font-weight:600
   }
   .btn.small{padding:6px 10px;line-height:1}
   .btn:disabled{opacity:.6;cursor:not-allowed}
   .muted{color:#6b7280;font-size:12px}
-  .chat{display:flex;flex-direction:column;gap:10px}
+
+  /* ===== リスト表示エリア ===== */
+  .chatlist{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    min-height:400px;
+    position:relative;
+  }
   .bubble{
-    /* 通常時の吹き出し幅（狭め） */
-    width: min(320px, calc(100% - 32px));max-width:min(560px, calc(100% - 24px));
     padding:10px;
     border-radius:12px;
     word-wrap:break-word;
+    word-break:break-word;
     white-space:pre-wrap;
-    transition: width .2s ease;
+    transition:transform .12s ease;
   }
-  .user{align-self:flex-end;background:var(--green);color:var(--green-text);border-top-right-radius:6px}
-  .assistant{align-self:flex-start;background:var(--gray);color:var(--gray-text);border-top-left-radius:6px}
+  .bubble.user{
+    align-self:flex-end;
+    background:var(--green);
+    color:var(--green-text);
+    border-top-right-radius:6px;
+    cursor:pointer;
+    width:min(420px, calc(100% - 32px)); /* 右に見切れにくい幅 */
+  }
+  .bubble.user[data-clickable="false"]{cursor:default}
+  .bubble.user:hover{filter:brightness(.98)}
+  .bubble.assistant{
+    align-self:flex-start;
+    background:var(--gray);
+    color:var(--gray-text);
+    border-top-left-radius:6px;
+    max-width:min(560px, calc(100% - 24px)); /* 見切れ防止 */
+  }
   .role{display:block;font-size:12px;font-weight:700;margin-bottom:4px;opacity:.8}
+  .empty{padding:12px;border:1px dashed #d1d5db;border-radius:12px;color:#6b7280;background:#fafafa}
   .kpi{display:flex;gap:12px;align-items:center;margin:8px 0 0;font-size:12px;color:#6b7280}
   .kpi-right{display:flex;gap:8px;align-items:center}
-  .empty{padding:12px;border:1px dashed #d1d5db;border-radius:12px;color:#6b7280;background:#fafafa}
   mark{padding:0 .15em;border-radius:4px}
-  details{margin-top:8px}
-  .row{display:flex;gap:8px;align-items:center}
-  .row > *{flex:1}
-  /* === ここから拡大（＋）状態のスタイル === */
+
+  /* === 左下ドック（ユーザーのみ抽出ON時にクリックで表示） === */
+  .assistant-dock{
+    position:fixed;
+    left:16px;
+    bottom:16px;
+    max-width:min(560px, calc(100% - 32px));
+    z-index:100;
+  }
+  .assistant-card{
+    background:var(--gray);
+    color:var(--gray-text);
+    border-radius:14px;
+    border-top-left-radius:6px;
+    padding:12px;
+    box-shadow:var(--shadow);
+  }
+  .assistant-card .head{
+    font-size:12px;font-weight:700;opacity:.8;margin-bottom:6px;
+    display:flex;align-items:center;gap:8px;
+  }
+  .assistant-card .close{
+    margin-left:auto;
+    background:#000; color:#fff; border:none; border-radius:999px;
+    width:22px;height:22px;line-height:22px;text-align:center;cursor:pointer;font-size:14px;
+    opacity:.7;
+  }
+  .assistant-card .close:hover{opacity:1}
+  .assistant-card .body{white-space:pre-wrap;word-break:break-word;}
+
+  /* === 拡大表示（＋） === */
   body.expand-chat .wrap{max-width:100vw}
   body.expand-chat .grid{grid-template-columns:1fr}
-  body.expand-chat .grid .left{display:none}      /* 入力パネルを隠す */
-  body.expand-chat .grid .right{min-height:calc(100vh - 120px);} /* 見やすく */
-  /* 拡大時は吹き出しもワイドに */
-  body.expand-chat .bubble{
-    width: min(480px, calc(100% - 32px));
-  }
-  /* （吹き出しは固定幅なので横には広がりません。行が増えるだけです） */
+  body.expand-chat .grid .left{display:none}
+  body.expand-chat .grid .right{min-height:calc(100vh - 120px)}
 </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="title">ChatGPTログ抽出ツール（あなた/ChatGPT 形式表示）</div>
+    <div class="title">ChatGPTログ抽出ツール（自分の発言だけ抽出・クリックで左下に回答表示）</div>
 
     <div class="grid">
       <!-- 左：入力 -->
       <section class="card left">
-        <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C した内容をそのまま）</label>
+        <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C でコピー）</label>
         <textarea id="source" placeholder="例：
 あなた: こんにちは！この前の件ですが…
 ChatGPT: こんにちは！もちろん、続きは…
@@ -123,12 +172,13 @@ ChatGPT: 承知しました。手順は……"></textarea>
           <button id="run" class="btn">③ 実行</button>
           <button id="clear" class="btn" style="background:#6b7280">クリア</button>
         </div>
+
         <details>
           <summary>使い方メモ</summary>
           <div class="muted">
-            ・貼り付けたテキストを <b>「あなた:」</b> を境に分割します。各「あなた:」に続く <b>「ChatGPT:」</b> を1セットとして抽出します。<br>
-            ・検索語は <b>あなた と ChatGPT の両方</b>の本文に対して部分一致で判定します（大文字小文字は区別）。<br>
-            ・一致箇所は <mark>ハイライト</mark> 表示します。
+            ・貼り付けたテキストを <b>「あなた:」</b> を境に分割し、各「あなた:」に続く <b>「ChatGPT:」</b> をひも付けます。<br>
+            ・「自分の発言だけ抽出する」にチェックすると、右に <b>あなたの発言だけ</b> を並べ、クリックすると <b>左下ドック</b>に ChatGPT の回答を表示（再クリックで閉じる）。<br>
+            ・未チェックでは、あなた→ChatGPT のペアを通常表示。検索語は両方に部分一致でハイライトします。
           </div>
         </details>
       </section>
@@ -138,14 +188,29 @@ ChatGPT: 承知しました。手順は……"></textarea>
         <div style="display:flex;justify-content:space-between;align-items:center">
           <b>結果</b>
           <div class="kpi-right">
-            <button id="toggleExpand" class="btn small" aria-pressed="false" title="チャット欄を広げる">＋</button>
+            <button id="toggleExpand" class="btn small" aria-pressed="true" title="チャット欄を元に戻す">−</button>
+            <label style="display:flex;align-items:center;gap:6px; user-select:none; margin-left:8px;">
+              <input id="onlyUser" type="checkbox"${onlyUserCheckedEL.checked ? " checked" : ""}> 自分の発言だけ抽出する
+            </label>
             <div class="kpi"><span id="count">0 件</span></div>
           </div>
         </div>
-        <div id="out" class="chat" style="margin-top:8px">
+
+        <div id="out" class="chatlist" style="margin-top:8px">
           <div class="empty">ここに抽出結果が表示されます。</div>
         </div>
       </section>
+    </div>
+  </div>
+
+  <!-- 左下ドック（ユーザーのみ抽出ON時に使用） -->
+  <div id="assistantDock" class="assistant-dock" hidden>
+    <div class="assistant-card">
+      <div class="head">
+        <span>ChatGPT</span>
+        <button class="close" title="閉じる" aria-label="閉じる">×</button>
+      </div>
+      <div class="body" id="assistantBody"></div>
     </div>
   </div>
 
@@ -159,6 +224,15 @@ ChatGPT: 承知しました。手順は……"></textarea>
   const out = $('#out');
   const count = $('#count');
   const toggleBtn = $('#toggleExpand');
+  // デフォルトで拡大状態（＋が押された状態）にする
+  document.body.classList.add('expand-chat');
+  toggleBtn.textContent = '−';
+  toggleBtn.title = 'チャット欄を元に戻す';
+  toggleBtn.setAttribute('aria-pressed', 'true');
+  const onlyUser = $('#onlyUser');
+  const dock = $('#assistantDock');
+  const dockBody = $('#assistantBody');
+  const dockClose = dock.querySelector('.close');
 
   function escapeHTML(s){
     return s.replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -167,7 +241,7 @@ ChatGPT: 承知しました。手順は……"></textarea>
     return s.replace(/[.*+?^\\\${}()|[\\]\\\\]/g, '\\\\$&');
   }
 
-  /* 改良版パーサ（末尾のやり取りも取得） */
+  // 「あなた:」→直後の「ChatGPT:」を1セットに抽出
   function parsePairs(text){
     const t = text.replace(/\\r\\n?/g, '\\n');
     const youRe = /^あなた:\\s*/gm;
@@ -202,26 +276,86 @@ ChatGPT: 承知しました。手順は……"></textarea>
     }
   }
 
-  function render(results, needle){
+  // ====== 表示：あなたのみ（クリックで左下ドックに差し込み。再クリックで閉じる） ======
+  function renderUsersOnly(pairs, needle){
     out.innerHTML = '';
-    if(results.length === 0){
+    if(pairs.length === 0){
+      out.innerHTML = \`<div class="empty">一致するやり取りはありませんでした。</div>\`;
+      count.textContent = '0 件';
+      dock.hidden = true;
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    pairs.forEach((p, i)=>{
+      const u = document.createElement('div');
+      u.className = 'bubble user';
+      u.innerHTML = \`<span class="role">あなた:</span>\$\{highlight(p.user, needle)\}\`;
+      u.tabIndex = 0;
+      u.setAttribute('role', 'button');
+      u.setAttribute('aria-expanded', 'false');
+      u.dataset.index = String(i);
+
+      function toggleDock(){
+        // すでに開いているChatGPT吹き出しがこの発言の直後にある場合 → 閉じる
+        const next = u.nextElementSibling;
+        if (next && next.classList.contains('assistant') && next.dataset.for === String(i)) {
+          next.remove();
+          u.setAttribute('aria-expanded', 'false');
+          return;
+        }
+        // ChatGPT発言要素を生成して次の自分の発言の直前に挿入
+        const ass = document.createElement('div');
+        ass.className = 'bubble assistant';
+        ass.dataset.for = String(i);
+        ass.innerHTML = \`<span class="role">ChatGPT:</span>\$\{highlight(p.assistant, needle)\}\`;
+
+        // 次の自分の発言を探す
+        let insertPoint = u.nextElementSibling;
+        while (insertPoint && !insertPoint.classList.contains('user')) {
+          insertPoint = insertPoint.nextElementSibling;
+        }
+
+        if (insertPoint) {
+          out.insertBefore(ass, insertPoint);
+        } else {
+          out.appendChild(ass);
+        }
+
+        u.setAttribute('aria-expanded', 'true');
+      }
+      u.addEventListener('click', toggleDock);
+      u.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); toggleDock(); } });
+
+      frag.appendChild(u);
+    });
+    out.appendChild(frag);
+    count.textContent = \`\$\{pairs.length\} 件\`;
+  }
+
+  // ====== 表示：通常（あなた→ChatGPT の順に並べる） ======
+  function renderAll(pairs, needle){
+    out.innerHTML = '';
+    if(pairs.length === 0){
       out.innerHTML = \`<div class="empty">一致するやり取りはありませんでした。</div>\`;
       count.textContent = '0 件';
       return;
     }
     const frag = document.createDocumentFragment();
-    for(const {user, assistant} of results){
+    pairs.forEach((p)=>{
       const u = document.createElement('div');
       u.className = 'bubble user';
-      u.innerHTML = \`<span class="role">あなた:</span>\$\{highlight(user, needle)\}\`;
+      u.setAttribute('data-clickable', 'false');
+      u.innerHTML = \`<span class="role">あなた:</span>\$\{highlight(p.user, needle)\}\`;
       const a = document.createElement('div');
       a.className = 'bubble assistant';
-      a.innerHTML = \`<span class="role">ChatGPT:</span>\$\{highlight(assistant, needle)\}\`;
+      a.innerHTML = \`<span class="role">ChatGPT:</span>\$\{highlight(p.assistant, needle)\}\`;
       frag.appendChild(u);
       frag.appendChild(a);
-    }
+    });
     out.appendChild(frag);
-    count.textContent = results.length + ' 件';
+    count.textContent = \`\$\{pairs.length\} 件\`;
+    dock.hidden = true; // 通常表示ではドックは使用しない
   }
 
   function runSearch(){
@@ -231,18 +365,22 @@ ChatGPT: 承知しました。手順は……"></textarea>
     const hits = !needle ? pairs : pairs.filter(p =>
       p.user.includes(needle) || p.assistant.includes(needle)
     );
-    render(hits, needle);
+    if(onlyUser.checked){
+      renderUsersOnly(hits, needle);
+    }else{
+      renderAll(hits, needle);
+    }
   }
 
   run.addEventListener('click', runSearch);
   q.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ runSearch(); }});
-  clearBtn.addEventListener('click', ()=>{
-    q.value = '';
-    runSearch();
-    q.focus();
-  });
+  clearBtn.addEventListener('click', ()=>{ q.value = ''; runSearch(); q.focus(); });
+  onlyUser.addEventListener('change', runSearch);
 
-  /* ＋／− でチャット欄拡大縮小 */
+  // 左下ドックを閉じる
+  dockClose.addEventListener('click', ()=>{ dock.hidden = true; dock.removeAttribute('data-for'); });
+
+  // ＋／− で右側をワイドに
   toggleBtn.addEventListener('click', ()=>{
     const expanded = document.body.classList.toggle('expand-chat');
     toggleBtn.textContent = expanded ? '−' : '＋';
@@ -256,14 +394,10 @@ ${injected}
 \`;
   source.value = initial;
   runSearch();
-const expanded = document.body.classList.toggle('expand-chat');
-    toggleBtn.textContent = expanded ? '−' : '＋';
-    toggleBtn.title = expanded ? 'チャット欄を元に戻す' : 'チャット欄を広げる';
-    toggleBtn.setAttribute('aria-pressed', expanded ? 'true' : 'false');
 })();
-<\/script>
+</[[script]]script>
 </body>
-</html>`;
+</html>`.replace("/[[script]]", "/");
   }
 
   function download(filename, text){
