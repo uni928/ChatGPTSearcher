@@ -160,7 +160,7 @@
     <div class="grid">
       <!-- 左：入力 -->
       <section class="card left">
-        <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C でコピー）</label>
+        <label for="source"><b>① チャット履歴をここに貼り付け</b>（Ctrl+A → Ctrl+C でコピー。話者名が無い場合も自動推定）</label>
         <textarea id="source" placeholder="例：
 あなた: こんにちは！この前の件ですが…
 ChatGPT: こんにちは！もちろん、続きは…
@@ -178,7 +178,7 @@ ChatGPT: 承知しました。手順は……"></textarea>
         <details>
           <summary>使い方メモ</summary>
           <div class="muted">
-            ・貼り付けたテキストを <b>「あなた:」</b> を境に分割し、各「あなた:」に続く <b>「ChatGPT:」</b> をひも付けます。<br>
+            ・「あなた:」「ChatGPT:」が含まれる場合はその見出しで分割します。見出しがない場合は、空行ごとの文章を質問・依頼表現や会話順から推定します。<br>            ・見出しがない文章の判定は推定です。段落の区切り方によって誤判定することがあります。<br>
             ・「自分の発言だけ抽出する」にチェックすると、右に <b>あなたの発言だけ</b> を並べ、クリックすると <b>左下ドック</b>に ChatGPT の回答を表示（再クリックで閉じる）。<br>
             ・未チェックでは、あなた→ChatGPT のペアを通常表示。検索語は両方に部分一致でハイライトします。
           </div>
@@ -243,29 +243,50 @@ ChatGPT: 承知しました。手順は……"></textarea>
     return s.replace(/[.*+?^\\\${}()|[\\]\\\\]/g, '\\\\$&');
   }
 
-  // 「あなた:」→直後の「ChatGPT:」を1セットに抽出
+  // 明示ラベルがあれば従い、なければ段落単位の手掛かりと会話順で話者を推定する。
   function parsePairs(text){
     const t = text.replace(/\\r\\n?/g, '\\n');
-    const youRe = /^あなた:\\s*/gm;
-    const youStarts = [];
-    let m;
-    while((m = youRe.exec(t)) !== null){
-      youStarts.push({ index: m.index, len: m[0].length });
+    const hasLabels = /^\\s*(?:あなた|ユーザー|ChatGPT|Assistant):/m.test(t);
+    const messages = [];
+    if(hasLabels){
+      const re = /^\\s*(あなた|ユーザー|ChatGPT|Assistant):\\s*/gm;
+      const marks = [];
+      let m;
+      while((m = re.exec(t)) !== null) marks.push({ index:m.index, end:re.lastIndex, role:/^(あなた|ユーザー)$/.test(m[1])?'user':'assistant' });
+      for(let i=0;i<marks.length;i++){
+        const body=t.slice(marks[i].end,i+1<marks.length?marks[i+1].index:t.length).trim();
+        if(body) messages.push({role:marks[i].role,text:body});
+      }
+    }else{
+      // Ctrl+A コピーには話者情報がないため、段落の特徴を使った推定。連続する同話者段落は結合する。
+      const parts=t.split(/\\n\\s*\\n+/).map(x=>x.trim()).filter(Boolean);
+      let previous='assistant';
+      const userCue=/(\\?|？|ください|下さい|教えて|作成して|作って|直して|修正して|できますか|でしょうか|ですか|ますか|と思いますか|並べて|下さい。|頂けますか|可能ですか)/;
+      const assistantCue=/^(はい|いいえ|一般には|一般的には|その記憶|今回なら|今回のよう|なので|つまり|特に|ただし|おすすめ|〜|「|\\*\\*|ChatGPT|添付ファイル|[\\w-]+\\.(?:html|md|png|plist))/i;
+      for(const part of parts){
+        let role;
+        if(userCue.test(part)) role='user';
+        else if(assistantCue.test(part)) role='assistant';
+        else role=previous==='user'?'assistant':'user';
+        const last=messages[messages.length-1];
+        if(last&&last.role===role) last.text+='\\n\\n'+part;
+        else messages.push({role,text:part});
+        previous=role;
+      }
     }
-    const pairs = [];
-    for(let i = 0; i < youStarts.length; i++){
-      const { index, len } = youStarts[i];
-      const blockStart = index + len;
-      const blockEnd   = (i + 1 < youStarts.length) ? youStarts[i+1].index : t.length;
-      const block = t.slice(blockStart, blockEnd);
-      const gptMatch = block.match(/^ChatGPT:\\s*/m);
-      if(!gptMatch) continue;
-      const gptIndex = block.search(/^ChatGPT:\\s*/m);
-      const user = block.slice(0, gptIndex).trim();
-      const assistant = block.slice(gptIndex + gptMatch[0].length).trim();
-      if(user.length || assistant.length) pairs.push({ user, assistant });
+    const pairs=[];
+    let pendingUser='';
+    for(const message of messages){
+      if(message.role==='user'){
+        if(pendingUser) pairs.push({user:pendingUser,assistant:''});
+        pendingUser=message.text;
+      }else if(pendingUser){
+        pairs.push({user:pendingUser,assistant:message.text});
+        pendingUser='';
+      }
     }
-    return pairs;
+    if(pendingUser) pairs.push({user:pendingUser,assistant:''});
+    return pairs.filter(p=>p.user||p.assistant);
   }
 
   function highlight(text, needle){
@@ -422,5 +443,4 @@ ${injected}
 </script>
 </body>
 </html>
-
 
